@@ -1,3 +1,10 @@
 opencv-python
 ultralytics
 numpy
+sounddevice
+librosa
+spafe
+torch
+torchaudio
+scikit-learn
+# pyroomacoustics  # Optional: DOA features (may require Windows Long Path support)
