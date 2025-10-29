@@ -148,3 +148,35 @@ def get_class_color(class_name):
 # --- Sanity Checks (Optional, but good for development) ---
 if not YOLO_ENGINE_PATH.exists():
     print(f"Warning: YOLO Engine not found at {YOLO_ENGINE_PATH}")
+
+
+# --- Autoframing Configuration ---
+# Enable/disable autoframing feature
+AUTOFRAMING_ENABLED = True  # Set to False to disable autoframing
+
+# Dual view layout
+AUTOFRAMING_LAYOUT = "horizontal"  # 'horizontal' (side-by-side) or 'vertical' (stacked)
+
+# Smoothing parameters
+AUTOFRAMING_SMOOTHING_SPEECH = 0.5  # Faster response during speech
+AUTOFRAMING_SMOOTHING_NORMAL = 0.2  # Slower response during silence
+
+# Active speaker tracking timeout (seconds)
+AUTOFRAMING_SPEECH_TIMEOUT = 2.0  # Keep tracking speaker for 2s after speech ends
+
+# Zoom padding around active speaker (0.3 = 30% padding)
+AUTOFRAMING_ZOOM_PADDING = 0.3
+
+# Audio processing configuration
+AUDIO_ENABLED = True  # Set to False to disable audio processing
+AUDIO_SAMPLERATE = 16000  # Audio sample rate
+AUDIO_CHANNELS = 1  # Number of audio channels (1 for mono)
+AUDIO_DEVICE = None  # None for default audio device, or specify device ID
+AUDIO_ENABLE_DOA = (
+    False  # Direction of Arrival (requires 4+ channels and pyroomacoustics)
+)
+
+# Speaker detection confidence thresholds
+SPEAKER_DETECTION_MIN_SCORE = (
+    0.5  # Minimum detection score to consider as potential speaker
+)

@@ -1,5 +1,3 @@
-# src/detector/yolo_detector.py
-
 from typing import Tuple
 
 import numpy as np

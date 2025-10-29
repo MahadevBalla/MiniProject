@@ -11,11 +11,19 @@ from .detector.yolo_detector import YOLODetector
 from .tracker.bytetrack_wrapper import ByteTrackWrapper
 from .utils import visualize
 
+# Import autoframing components (only if enabled)
+if config.AUTOFRAMING_ENABLED:
+    from .autoframing import AutoFramer, ViewRenderer
+
+# Import audio director (only if enabled)
+if config.AUDIO_ENABLED and config.AUTOFRAMING_ENABLED:
+    from .audio_director import AudioDirector
+
 
 def parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments for the tracker."""
     parser = argparse.ArgumentParser(
-        description="AICamera: Real-time Object Detection & Tracking"
+        description="AICamera: Real-time Object Detection & Tracking with Autoframing"
     )
     parser.add_argument(
         "--input",
@@ -85,6 +93,16 @@ def parse_arguments() -> argparse.Namespace:
         default="cuda:0",
         help="Device to use for inference (e.g., 'cuda:0', 'cpu'). TensorRT typically requires CUDA.",
     )
+    parser.add_argument(
+        "--no_autoframing",
+        action="store_true",
+        help="Disable autoframing feature (use original single view).",
+    )
+    parser.add_argument(
+        "--no_audio",
+        action="store_true",
+        help="Disable audio processing for speaker detection.",
+    )
 
     args = parser.parse_args()
     if args.device == "cpu" and Path(args.yolo_engine).exists():
@@ -95,8 +113,12 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main():
-    """Main function to run the object detection and tracking pipeline."""
+    """Main function to run the object detection and tracking pipeline with autoframing."""
     args = parse_arguments()
+
+    # Override config with command-line args
+    autoframing_enabled = config.AUTOFRAMING_ENABLED and not args.no_autoframing
+    audio_enabled = config.AUDIO_ENABLED and not args.no_audio and autoframing_enabled
 
     # --- Setup Device ---
     if args.device.lower() == "cpu":
@@ -119,8 +141,7 @@ def main():
         yolo_detector = YOLODetector(
             engine_path=args.yolo_engine,
             conf_threshold=args.conf_thresh,
-            # nms_threshold is often handled by the engine, but can be passed if needed
-            device=device,  # YOLODetector's TRTEngine will use this
+            device=device,
         )
     except Exception as e:
         print(f"Error initializing YOLO Detector: {e}")
@@ -150,7 +171,7 @@ def main():
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     source_fps = cap.get(cv2.CAP_PROP_FPS)
-    if source_fps == 0:  # Webcam might return 0
+    if source_fps == 0:
         source_fps = config.DEFAULT_OUTPUT_FPS
     print(
         f"Opened {source_type}: {video_source_name} ({frame_width}x{frame_height} @ {source_fps:.2f} FPS)"
@@ -165,16 +186,77 @@ def main():
             match_thresh=args.match_thresh,
             frame_rate=source_fps,
         )
-        print(f"ByteTrack initialized with:")
-        print(f"  Track threshold: {args.track_thresh}")
-        print(f"  Track buffer: {args.track_buffer}")
-        print(f"  Match threshold: {args.match_thresh}")
-        print(f"  Frame rate: {source_fps:.2f}")
+        print(f"ByteTrack initialized")
     except Exception as e:
         print(f"Error initializing ByteTrack Tracker: {e}")
         return
 
-    # --- Setup Video Output (if saving) ---
+    # --- Initialize Autoframing Components ---
+    auto_framer = None
+    view_renderer = None
+    audio_director = None
+
+    if autoframing_enabled:
+        print("Initializing Autoframing Components...")
+
+        try:
+            # Initialize AutoFramer
+            auto_framer = AutoFramer(
+                frame_width=frame_width,
+                frame_height=frame_height,
+                smoothing_alpha_speech=config.AUTOFRAMING_SMOOTHING_SPEECH,
+                smoothing_alpha_normal=config.AUTOFRAMING_SMOOTHING_NORMAL,
+                speech_timeout=config.AUTOFRAMING_SPEECH_TIMEOUT,
+            )
+
+            # Initialize ViewRenderer
+            view_renderer = ViewRenderer(
+                frame_width=frame_width,
+                frame_height=frame_height,
+                layout=config.AUTOFRAMING_LAYOUT,
+                zoom_padding=config.AUTOFRAMING_ZOOM_PADDING,
+            )
+
+            print("Autoframing components initialized")
+
+        except Exception as e:
+            print(f"Error initializing autoframing components: {e}")
+            print("Continuing without autoframing...")
+            autoframing_enabled = False
+
+    # --- Initialize Audio Director ---
+    if audio_enabled:
+        print("Initializing Audio Director...")
+        try:
+            # Setup callbacks
+            audio_callbacks = {
+                "on_speech_start": lambda: (
+                    auto_framer.on_speech_start() if auto_framer else None
+                ),
+                "on_speech_end": lambda: (
+                    auto_framer.on_speech_end() if auto_framer else None
+                ),
+            }
+
+            audio_director = AudioDirector(
+                samplerate=config.AUDIO_SAMPLERATE,
+                channels=config.AUDIO_CHANNELS,
+                device=config.AUDIO_DEVICE,
+                enable_doa=config.AUDIO_ENABLE_DOA,
+                callbacks=audio_callbacks,
+            )
+
+            # Start audio processing
+            audio_director.start()
+            print("Audio Director initialized and started")
+
+        except Exception as e:
+            print(f"Error initializing Audio Director: {e}")
+            print("Continuing without audio processing...")
+            audio_enabled = False
+            audio_director = None
+
+    # --- Setup Video Output ---
     video_writer = None
     if not args.no_save:
         output_dir = Path(args.output_dir)
@@ -183,21 +265,29 @@ def main():
         if args.output_filename:
             output_video_name = args.output_filename
             if not output_video_name.lower().endswith((".mp4", ".avi")):
-                output_video_name += ".mp4"  # Default to mp4
+                output_video_name += ".mp4"
         else:
             timestamp = time.strftime("%Y%m%d-%H%M%S")
-            output_video_name = f"{video_source_name}_tracked_{timestamp}.mp4"
+            mode_suffix = "_autoframe" if autoframing_enabled else "_tracked"
+            output_video_name = f"{video_source_name}{mode_suffix}_{timestamp}.mp4"
 
         output_video_path = output_dir / output_video_name
 
-        # Use MP4V for .mp4, or XVID for .avi for broader compatibility
+        # Calculate output dimensions
+        if autoframing_enabled and view_renderer:
+            output_width = view_renderer.output_width
+            output_height = view_renderer.output_height
+        else:
+            output_width = frame_width
+            output_height = frame_height
+
         fourcc = (
             cv2.VideoWriter_fourcc(*"mp4v")
             if output_video_name.lower().endswith(".mp4")
             else cv2.VideoWriter_fourcc(*"XVID")
         )
         video_writer = cv2.VideoWriter(
-            str(output_video_path), fourcc, source_fps, (frame_width, frame_height)
+            str(output_video_path), fourcc, source_fps, (output_width, output_height)
         )
         if video_writer.isOpened():
             print(f"Output video will be saved to: {output_video_path}")
@@ -205,7 +295,7 @@ def main():
             print(
                 f"Error: Could not open video writer for {output_video_path}. Video will not be saved."
             )
-            video_writer = None  # Ensure it's None if opening failed
+            video_writer = None
 
     # --- Main Processing Loop ---
     frame_idx = 0
@@ -223,7 +313,6 @@ def main():
 
             # 1. Detection
             try:
-                # yolo_detector.detect returns: bboxes_xyxy, scores, class_ids, filtered_indices
                 det_bboxes, det_scores, det_class_ids, _ = yolo_detector.detect(
                     frame_bgr
                 )
@@ -232,98 +321,144 @@ def main():
                 det_class_ids = (
                     det_class_ids if det_class_ids is not None else np.zeros((0,))
                 )
-                # det_bboxes = det_bboxes.astype(np.float32)
-                # det_scores = det_scores.astype(np.float32)
-                # det_class_ids = det_class_ids.astype(np.int64)
                 det_bboxes = np.ascontiguousarray(det_bboxes, dtype=np.float32)
                 det_scores = np.ascontiguousarray(det_scores, dtype=np.float32)
                 det_class_ids = np.ascontiguousarray(det_class_ids, dtype=np.int64)
 
             except Exception as e:
                 print(f"Error during detection on frame {frame_idx}: {e}")
-                # Optionally, skip tracking for this frame or break
                 if args.show_display:
-                    cv2.imshow("AICamera Tracking", frame_bgr)  # Show original frame
+                    cv2.imshow("AICamera Tracking", frame_bgr)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
                 continue
 
             # 2. Tracking
             try:
-                # bytetrack_tracker.update expects: yolo_bboxes_xyxy, yolo_confidences, yolo_class_ids, original_frame_bgr
-                # It returns: List of (x1, y1, x2, y2, track_id, class_name, track_confidence)
                 tracked_objects = bytetrack_tracker.update(
                     det_bboxes,
                     det_scores,
                     det_class_ids,
-                    frame_bgr.copy(),  # Pass a copy if frame_bgr is modified by vis
+                    frame_bgr.copy(),
                 )
             except Exception as e:
                 print(f"Error during tracking on frame {frame_idx}: {e}")
-                tracked_objects = []  # Continue with no tracks for this frame
+                tracked_objects = []
+
+            # 3. Autoframing Update (if enabled)
+            active_speaker_info = None
+            if autoframing_enabled and auto_framer:
+                try:
+                    # Get speech state from audio director or auto_framer
+                    speech_active = auto_framer.speech_active if auto_framer else False
+
+                    # Update active speaker tracking
+                    active_speaker_info = auto_framer.update(
+                        tracked_objects, speech_active=speech_active
+                    )
+                except Exception as e:
+                    print(f"Error in autoframing update: {e}")
 
             end_time_frame = time.time()
             frame_processing_time = end_time_frame - start_time_frame
             total_time_spent += frame_processing_time
-            if (
-                frame_idx > 0 and total_time_spent > 0
-            ):  # Avoid division by zero, smooth FPS
+            if frame_idx > 0 and total_time_spent > 0:
                 display_fps = (frame_idx + 1) / total_time_spent
             elif frame_processing_time > 0:
                 display_fps = 1.0 / frame_processing_time
 
-            # 3. Visualization
-            vis_frame = frame_bgr.copy()  # Draw on a copy
+            # 4. Visualization
+            vis_frame = frame_bgr.copy()
 
-            # Convert tracked_objects to tlwhs/ids/scores format
+            # Convert tracked_objects to tlwhs/ids/scores for visualization
             tlwhs, obj_ids, scores = [], [], []
             for x1, y1, x2, y2, tid, cls_name, score in tracked_objects:
                 tlwhs.append([x1, y1, x2 - x1, y2 - y1])
                 obj_ids.append(tid)
                 scores.append(score)
 
-            # Draw the boxes and IDs
+            # Draw tracking results
             vis_frame = visualize.plot_tracking(vis_frame, tlwhs, obj_ids, scores)
 
-            # Draw FPS and other info
+            # Draw info panel
+            mode_text = (
+                "Autoframing + Audio"
+                if (autoframing_enabled and audio_enabled)
+                else "Autoframing" if autoframing_enabled else "Tracking Only"
+            )
             info_lines = [
-                f"AICamera: YOLOv8 + ByteTrack",
+                f"AICamera: YOLOv8 + ByteTrack [{mode_text}]",
                 f"Input: {video_source_name}",
                 f"FPS: {display_fps:.2f}",
             ]
+
+            # Add audio status if enabled
+            if audio_enabled and auto_framer:
+                speech_status = "SPEAKING" if auto_framer.speech_active else "Silent"
+                info_lines.append(f"Audio: {speech_status}")
+
             vis_frame = visualize.draw_info_panel(vis_frame, info_lines)
 
-            # 4. Display and Save
+            # 5. Render dual view (if autoframing enabled)
+            if autoframing_enabled and view_renderer and active_speaker_info:
+                track_id, speaker_box = active_speaker_info
+                speech_active = auto_framer.speech_active if auto_framer else False
+
+                final_frame = view_renderer.render_dual_view(
+                    vis_frame,
+                    active_speaker_box=speaker_box,
+                    track_id=track_id,
+                    speech_active=speech_active,
+                )
+            elif autoframing_enabled and view_renderer:
+                # No active speaker, but still render dual view with placeholder
+                final_frame = view_renderer.render_dual_view(vis_frame)
+            else:
+                # Single view mode
+                final_frame = vis_frame
+
+            # 6. Display and Save
             if args.show_display:
-                cv2.imshow("AICamera Tracking", vis_frame)
+                window_name = (
+                    "AICamera - Autoframing"
+                    if autoframing_enabled
+                    else "AICamera Tracking"
+                )
+                cv2.imshow(window_name, final_frame)
                 key = cv2.waitKey(int(1000 / source_fps)) & 0xFF
                 if key == ord("q"):
                     print("Exiting...")
                     break
 
             if video_writer and video_writer.isOpened():
-                video_writer.write(vis_frame)
+                video_writer.write(final_frame)
 
             frame_idx += 1
-            if frame_idx % 100 == 0:  # Print progress every 100 frames
+            if frame_idx % 100 == 0:
                 print(f"Processed {frame_idx} frames. Current FPS: {display_fps:.2f}")
 
     except KeyboardInterrupt:
         print("Processing interrupted by user.")
     finally:
         # --- Cleanup ---
+        if audio_director:
+            audio_director.stop()
+            print("Audio Director stopped.")
+
         if cap:
             cap.release()
             print("Video source released.")
+
         if video_writer and video_writer.isOpened():
             video_writer.release()
             print("Output video writer released.")
+
         if args.show_display:
             cv2.destroyAllWindows()
             print("Display windows closed.")
 
         avg_fps = (frame_idx / total_time_spent) if total_time_spent > 0 else 0
-        print(f"\n--- Processing Summary ---")
+        print("\n--- Processing Summary ---")
         print(f"Total frames processed: {frame_idx}")
         print(f"Total time: {total_time_spent:.2f} seconds")
         print(f"Average FPS: {avg_fps:.2f}")
@@ -331,7 +466,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # This structure ensures that if this script is run directly,
-    # the main() function is called.
-    # For `python -m src.aicamera_tracker`, Python handles the module execution.
     main()
