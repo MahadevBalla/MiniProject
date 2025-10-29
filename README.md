@@ -1,121 +1,145 @@
-# MiniProject - Autonomous Camera Director
+# Autonomous Camera Director
 
-## Overview
-This project implements an intelligent camera director that combines real-time person detection with audio processing for automatic camera focusing in lecture halls. It uses YOLOv8 for person detection and includes advanced audio features like voice activity detection, speaker classification, and direction of arrival estimation.
+A high-performance computer vision system that combines YOLOv8 detection, ByteTrack multi-object tracking, and intelligent auto-framing to automatically focus on active speakers in real-time video.
 
-## Project Structure
+## What It Does
+
+- **Detects & Tracks People**: Uses YOLOv8 for fast person detection and ByteTrack for smooth tracking across frames
+- **Auto-Frames Active Speakers**: Automatically zooms in on the person who's speaking using audio cues
+- **Dual View Display**: Shows both the normal view and a zoomed view of the active speaker side-by-side
+- **GPU Accelerated**: Leverages TensorRT for fast inference on NVIDIA GPUs
+
+## Tech Stack
+
+- **Detection**: YOLOv8 (optimized with TensorRT)
+- **Tracking**: ByteTrack (Kalman filter + IoU matching)
+- **Audio**: Silero VAD for speech detection
+- **Acceleration**: NVIDIA TensorRT + CUDA
+
+## Requirements
+
+### Hardware
+
+- NVIDIA GPU (GTX 1660 Ti or better recommended; tested on RTX 4060 8GB)
+- Microphone (for auto-framing feature)
+
+### Software
+
+- Ubuntu 24.04 LTS (or compatible Linux)
+- Python 3.10+
+- NVIDIA Driver: 580.65.06
+- CUDA Toolkit: 13.0 (Build 13.0.48)
+- cuDNN: 9.0+
+- TensorRT: 10.13.03
+
+## Installation
+
+1. **Install NVIDIA Stack**
+
+First, install the NVIDIA driver, CUDA, cuDNN, and TensorRT. Verify your installation:
+
+```bash
+nvidia-smi  # Should show your GPU
+nvcc --version  # Should show CUDA version
+trtexec --help  # Should show TensorRT help
 ```
-MiniProject
-├── src
-│   ├── main.py                    # Original YOLO-only entry point
-│   ├── audio_director.py          # Real-time audio processing module
-│   ├── audio_camera_integration.py # Integrated audio-visual director
-│   ├── auto_frame.py              # Functions for auto-framing detected persons
-│   ├── detectors
-│   │   └── yolov8_detector.py     # YOLOv8 model loading and detection
-│   ├── utils
-│   │   └── smoothing.py           # Utility functions for smoothing transitions
-│   └── __init__.py                # Marks the src directory as a Python package
-├── models
-│   └── yolov8n.pt                 # Pre-trained YOLOv8 model file
-├── requirements.txt               # Python dependencies
-├── .gitignore                     # Files and directories to ignore by Git
-└── README.md                      # Documentation for the project
+
+If not installed, follow [NVIDIA's official documentation](https://docs.nvidia.com/) to set them up.
+
+2. **Clone Repository**
+
+```bash
+git clone https://github.com/MahadevBalla/MiniProject
+cd MiniProject
 ```
 
-## Setup Instructions
+- 3. **Set Up Python Environment**
 
-1. **Clone the Repository**
-   Clone the project repository to your local machine using:
-   ```
-   git clone <repository-url>
-   ```
+**Note**: Install PyTorch with CUDA support before installing other dependencies.
 
-2. **Navigate to the Project Directory**
-   Change to the project directory:
-   ```
-   cd MiniProject
-   ```
+- Create and activate a virtual environment:
 
-3. **Create a Virtual Environment (Optional but Recommended)**
-   Create a virtual environment to manage dependencies:
-   ```
-   python -m venv venv
-   ```
-   Activate the virtual environment:
-   - For Command Prompt:
-     ```
-     venv\Scripts\activate
-     ```
-   - For PowerShell:
-     ```
-     .\venv\Scripts\Activate.ps1
-     ```
+```bash
+python3.10 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+```
 
-4. **Install Dependencies**
-   Install the required Python packages using:
-   ```
-   pip install -r requirements.txt
-   ```
+- Install PyTorch (with CUDA) — choose the command for your setup from the [official PyTorch installation page](https://pytorch.org/get-started/locally/)
 
-5. **Run the Application**
-   
-   **Option 1: Original YOLO-only version**
-   ```
-   python src/main.py
-   ```
-   
-   **Option 2: Audio-only processing (for testing)**
-   ```
-   python src/audio_director.py
-   ```
-   
-   **Option 3: Integrated audio-visual director (recommended)**
-   ```
-   python src/audio_camera_integration.py
-   ```
+Example for CUDA 13.0:
 
-## Features
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
 
-### Visual Processing
-- Real-time person detection using YOLOv8
-- Automatic camera focusing on detected persons
-- Smooth transitions and bounding box tracking
-- Full-screen display mode
+- Install remaining dependencies:
 
-### Audio Processing
-- **Voice Activity Detection (VAD)**: Uses Silero VAD for accurate speech detection
-- **Feature Extraction**: MFCC and LPC features for speaker analysis
-- **Speaker Classification**: Trainable classifier to distinguish lecturer vs audience
-- **Direction of Arrival (DOA)**: Optional support for microphone arrays
-- **Real-time Processing**: Low-latency audio processing in separate thread
+```bash
+pip install -r requirements.txt
+```
 
-### Integration Features
-- Speech-triggered camera focus changes
-- Audio-visual synchronization
-- Training mode for speaker classification
-- Configurable audio parameters
+4. **Download Models & TensorRT Engines**
+
+```bash
+bash scripts/download_models.sh
+bash scripts/export_trt_engines.sh
+```
+
+This downloads the YOLOv8n ONNX model to ```models/detection/``` and exports a TensorRT engine (```models/detection/yolov8n.engine```) for optimized inference.
 
 ## Usage
 
-### Basic Usage
-- The application will open a window displaying the webcam feed
-- It will automatically detect and track persons in the frame
-- Audio processing runs in the background and influences camera behavior
-- Press 'q' to exit the application
+- Run on a video file
 
-### Training Speaker Classification
-1. Press 't' to start training mode
-2. Enter label: 0 for audience, 1 for lecturer
-3. Press '0' or '1' to add training samples while speaking
-4. Press 's' to stop training and train the classifier
-5. The system will now automatically classify speakers
+```bash
+python -m src.aicamera_tracker --input assets/test.mp4 --show_display
+```
 
-### Audio Controls
-- The system automatically detects speech and adjusts camera behavior
-- Green bounding boxes indicate speech is active
-- Red bounding boxes indicate no speech detected
-- Console shows real-time audio events and feature information
+- With Webcam
 
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
+```bash
+python -m src.aicamera_tracker --webcam_id 0 --show_display
+```
+
+Auto-framing is enabled by default and displays two synchronized views:
+
+- Left: Normal view with all tracked people
+- Right: Zoomed view of the active speaker
+
+## Project Structure
+
+```
+MiniProject/
+├── models/
+│   └── detection/          # YOLO models (.onnx, .engine)
+├── scripts/                # Setup scripts
+├── src/
+│   ├── autoframing/        # Auto-framing logic
+│   │   ├── auto_framer.py  # Active speaker tracking
+│   │   ├── smoothing.py    # Box smoothing
+│   │   └── view_renderer.py # Dual view rendering
+│   ├── detector/
+│   │   └── yolo_detector.py # YOLOv8 wrapper
+│   ├── tracker/
+│   │   ├── core/           # ByteTrack core logic
+│   │   │   ├── basetrack.py
+│   │   │   ├── kalman_filter.py
+│   │   │   └── matching.py
+│   │   ├── byte_tracker.py  # ByteTrack implementation
+│   │   └── bytetrack_wrapper.py # Wrapper interface
+│   ├── trt_utils/          # TensorRT engine handling
+│   ├── utils/              # Helpers (visualization, etc.)
+│   ├── audio_director.py   # Audio processing
+│   ├── config.py           # Configuration
+│   └── aicamera_tracker.py # Main entry point
+├── assets/                 # Demo videos
+├── outputs/                # Saved videos go here
+└── requirements.txt
+```
+
+### Acknowledgements
+
+This project builds upon the [AI-Camera](https://github.com/abdur75648/AI-Camera) repository by Abdur Rahman (MIT License).
+
+YOLOv8 + TensorRT integration was adapted and extended; ByteTrack and auto-framing modules were developed independently.
