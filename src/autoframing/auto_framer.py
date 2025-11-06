@@ -1,3 +1,4 @@
+# File: MiniProject/src/autoframing/auto_framer.py
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -9,6 +10,10 @@ from .smoothing import adaptive_smooth_transition
 class AutoFramer:
     """
     Manages active speaker detection by combining audio cues with visual tracking.
+    Now camera-aware: expects tracked objects of the form:
+      (x1, y1, x2, y2, track_id, class_name, score, cam_id)
+    Returns active speaker info as:
+      (track_id, smoothed_box, cam_id)
     """
 
     def __init__(
@@ -45,7 +50,10 @@ class AutoFramer:
         self.last_speech_time: float = 0.0
 
         # Track history for speaker identification
-        self.track_speech_scores: Dict[int, float] = {}  # track_id -> speech score
+        # keys are (cam_id, track_id) to avoid id collisions across cams
+        self.track_speech_scores: Dict[Tuple[int, int], float] = (
+            {}
+        )  # (cam_id,track_id) -> score
 
         print(f"AutoFramer initialized: {frame_width}x{frame_height}")
 
@@ -60,16 +68,16 @@ class AutoFramer:
 
     def update(
         self, tracked_objects: List[Tuple], speech_active: bool = None
-    ) -> Optional[Tuple[int, np.ndarray]]:
+    ) -> Optional[Tuple[int, np.ndarray, int]]:
         """
         Update active speaker tracking based on tracked objects and audio state.
 
         Args:
-            tracked_objects: List of (x1, y1, x2, y2, track_id, class_name, score)
+            tracked_objects: List of (x1, y1, x2, y2, track_id, class_name, score, cam_id)
             speech_active: Override speech state (if provided)
 
         Returns:
-            Tuple of (active_speaker_id, smoothed_box) or None if no active speaker
+            Tuple of (active_track_id, smoothed_box, cam_id) or None if no active speaker
         """
         if speech_active is not None:
             if speech_active and not self.speech_active:
@@ -89,93 +97,141 @@ class AutoFramer:
             self.active_speaker_box = None
             return None
 
-        # Filter for person class only
-        persons = [obj for obj in tracked_objects if obj[5] == "person"]
+        # Filter for person class only and ensure we have cam_id
+        persons = []
+        for obj in tracked_objects:
+            # support both 7-field (old) and 8-field (new) formats
+            if len(obj) == 7:
+                x1, y1, x2, y2, track_id, class_name, score = obj
+                cam_id = 0  # unknown cam; fallback to 0
+            else:
+                x1, y1, x2, y2, track_id, class_name, score, cam_id = obj
+            if class_name == "person":
+                persons.append(
+                    (
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        int(track_id),
+                        class_name,
+                        float(score),
+                        int(cam_id),
+                    )
+                )
 
         if not persons:
             # No persons detected, maintain last box if within timeout
             if self.active_speaker_box is not None and tracking_active:
-                return (self.active_speaker_id, self.active_speaker_box)
+                # return last known active speaker if still in timeout
+                return (
+                    self.active_speaker_id,
+                    self.active_speaker_box,
+                    getattr(self, "active_cam_id", 0),
+                )
             return None
 
-        # Get current track IDs
-        current_track_ids = set()
-        for x1, y1, x2, y2, track_id, class_name, score in persons:
-            current_track_ids.add(track_id)
+        # Build set of current (cam_id, track_id)
+        current_keys = set()
+        for x1, y1, x2, y2, track_id, class_name, score, cam_id in persons:
+            current_keys.add((cam_id, track_id))
+            if (cam_id, track_id) not in self.track_speech_scores:
+                self.track_speech_scores[(cam_id, track_id)] = 0.0
 
-            if track_id not in self.track_speech_scores:
-                self.track_speech_scores[track_id] = 0.0
-
-        # Step 1: Decay ALL scores (recency bias)
-        for tid in list(self.track_speech_scores.keys()):
-            if tid in current_track_ids:
-                self.track_speech_scores[tid] *= 0.85  # Exponential decay
+        # Step 1: Decay ALL scores; remove disappeared tracks
+        for key in list(self.track_speech_scores.keys()):
+            if key in current_keys:
+                self.track_speech_scores[key] *= 0.85  # Exponential decay
             else:
-                # Remove tracks that disappeared
-                del self.track_speech_scores[tid]
+                # remove tracks that disappeared
+                del self.track_speech_scores[key]
 
-        # Step 2: Boost ONLY the likely current speaker
+        # Step 2: Boost likely current speaker when speech_active
         if self.speech_active:
-            likely_speaker_id = None
+            likely_key = None
 
-            # Check if current speaker is still visible and speech just started
+            # speech just started?
             speech_just_started = (time.time() - self.last_speech_time) < 0.3
 
             if (
                 self.active_speaker_id is not None
-                and self.active_speaker_id in current_track_ids
+                and hasattr(self, "active_cam_id")
+                and (self.active_cam_id, self.active_speaker_id) in current_keys
                 and not speech_just_started
             ):
-                # Continue tracking current speaker if recently active
-                likely_speaker_id = self.active_speaker_id
+                # continue the same speaker if still visible and not a brand-new speech
+                likely_key = (self.active_cam_id, self.active_speaker_id)
             else:
-                # New speech event - select largest person as likely speaker
-                likely_speaker_id = self._select_largest_person(persons)
+                # choose largest person across all cameras
+                likely_key = self._select_largest_person(persons)
 
-            # Boost only the likely speaker significantly
-            if likely_speaker_id is not None:
-                if likely_speaker_id not in self.track_speech_scores:
-                    self.track_speech_scores[likely_speaker_id] = 0.0
-                self.track_speech_scores[likely_speaker_id] += 3.0  # Strong boost
+            if likely_key is not None:
+                if likely_key not in self.track_speech_scores:
+                    self.track_speech_scores[likely_key] = 0.0
+                # strong boost to likely speaker
+                self.track_speech_scores[likely_key] += 3.0
 
         # SPEAKER SELECTION
         if self.speech_active:
-            # During active speech: select person with highest score
+            # pick highest-scored key
             if self.track_speech_scores:
-                active_id = max(self.track_speech_scores.items(), key=lambda x: x[1])[0]
+                active_key = max(self.track_speech_scores.items(), key=lambda x: x[1])[
+                    0
+                ]
             else:
-                # Fallback to largest person
-                active_id = self._select_largest_person(persons)
+                active_key = self._select_largest_person(persons)
         else:
-            # During timeout period: maintain current speaker if still visible
+            # during timeout: prefer previous speaker if still visible
             if (
                 self.active_speaker_id is not None
-                and self.active_speaker_id in current_track_ids
+                and hasattr(self, "active_cam_id")
+                and (self.active_cam_id, self.active_speaker_id) in current_keys
             ):
-                active_id = self.active_speaker_id
+                active_key = (self.active_cam_id, self.active_speaker_id)
             else:
-                # Current speaker disappeared, select one with highest speech score
                 if self.track_speech_scores:
-                    active_id = max(
+                    active_key = max(
                         self.track_speech_scores.items(), key=lambda x: x[1]
                     )[0]
                 else:
-                    active_id = self._select_largest_person(persons)
+                    active_key = self._select_largest_person(persons)
 
-        print(f"[DEBUG]: Scores: {self.track_speech_scores}")
-        print(f"[DEBUG]: Selected active_id: {active_id}")
+        # active_key may be tuple (cam_id, track_id) or None
+        if active_key is None:
+            return None
 
-        # Get bounding box for active speaker
+        # unpack
+        if isinstance(active_key, tuple) and len(active_key) == 2:
+            active_cam_id, active_id = active_key
+        else:
+            # if returned as single int from legacy helper
+            active_id = active_key
+            active_cam_id = getattr(self, "active_cam_id", 0)
+
+        # get bounding box for the chosen (cam_id,track_id)
         active_box = None
-        for x1, y1, x2, y2, track_id, class_name, score in persons:
-            if track_id == active_id:
+        for x1, y1, x2, y2, track_id, class_name, score, cam_id in persons:
+            if cam_id == active_cam_id and track_id == active_id:
                 active_box = np.array([x1, y1, x2, y2], dtype=np.float32)
                 break
 
         if active_box is None:
+            # if exact pair not found, try matching by track_id ignoring cam
+            for x1, y1, x2, y2, track_id, class_name, score, cam_id in persons:
+                if track_id == active_id:
+                    active_box = np.array([x1, y1, x2, y2], dtype=np.float32)
+                    active_cam_id = cam_id
+                    break
+
+        if active_box is None:
             return None
 
-        # Apply smoothing
+        # smoothing (boxes are in camera-local coordinates)
+        # If previously active_speaker_box belonged to another camera, reset smoothing to avoid jumps.
+        if getattr(self, "active_cam_id", None) != active_cam_id:
+            # reset smoothing state for cross-camera jumps
+            self.active_speaker_box = None
+
         self.active_speaker_box = adaptive_smooth_transition(
             self.active_speaker_box,
             active_box,
@@ -184,44 +240,51 @@ class AutoFramer:
             alpha_normal=self.smoothing_alpha_normal,
         )
 
-        self.active_speaker_id = active_id
+        self.active_speaker_id = int(active_id)
+        self.active_cam_id = int(active_cam_id)
         self.last_speaker_box = self.active_speaker_box.copy()
 
-        return (self.active_speaker_id, self.active_speaker_box)
+        # return (track_id, box, cam_id)
+        return (self.active_speaker_id, self.active_speaker_box, self.active_cam_id)
 
-    def _select_largest_person(self, persons: List[Tuple]) -> int:
+    def _select_largest_person(self, persons: List[Tuple]) -> Optional[Tuple[int, int]]:
         """
-        Select the person with the largest bounding box area.
+        Select the person with the largest bounding box area across all cameras.
 
         Args:
-            persons: List of person detections
+            persons: List of (x1,y1,x2,y2,track_id,class_name,score,cam_id)
 
         Returns:
-            Track ID of largest person
+            (cam_id, track_id) of the largest person or None
         """
         if not persons:
             return None
 
         largest_area = 0
-        largest_id = None
+        largest_pair = None
 
-        for x1, y1, x2, y2, track_id, class_name, score in persons:
-            area = (x2 - x1) * (y2 - y1)
+        for x1, y1, x2, y2, track_id, class_name, score, cam_id in persons:
+            area = max(0.0, (x2 - x1) * (y2 - y1))
             if area > largest_area:
                 largest_area = area
-                largest_id = track_id
+                largest_pair = (cam_id, int(track_id))
 
-        return largest_id
+        return largest_pair
 
-    def get_active_speaker_info(self) -> Optional[Tuple[int, np.ndarray]]:
+    def get_active_speaker_info(self) -> Optional[Tuple[int, np.ndarray, int]]:
         """
         Get current active speaker information.
 
         Returns:
-            Tuple of (speaker_id, bounding_box) or None
+            Tuple of (speaker_id, bounding_box, cam_id) or None
         """
-        if self.active_speaker_id is not None and self.active_speaker_box is not None:
-            return (self.active_speaker_id, self.active_speaker_box)
+        if (
+            hasattr(self, "active_speaker_id")
+            and self.active_speaker_id is not None
+            and self.active_speaker_box is not None
+            and hasattr(self, "active_cam_id")
+        ):
+            return (self.active_speaker_id, self.active_speaker_box, self.active_cam_id)
         return None
 
     def reset(self):
@@ -231,3 +294,5 @@ class AutoFramer:
         self.last_speaker_box = None
         self.speech_active = False
         self.track_speech_scores.clear()
+        if hasattr(self, "active_cam_id"):
+            del self.active_cam_id
