@@ -11,6 +11,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Paths to TensorRT engine files
 YOLO_ENGINE_PATH = PROJECT_ROOT / "models/detection/yolov8n.engine"
 
+# Path to local weights for other detectors
+FASTER_RCNN_WEIGHTS_PATH = PROJECT_ROOT / "models/detection/fasterrcnn_resnet50.pth"
+SSD300_WEIGHTS_PATH = PROJECT_ROOT / "models/detection/ssd300_vgg16.pth"
+MOBILENET_SSD_PROTOTXT = PROJECT_ROOT / "models/detection/mobilenet_ssd_v2.prototxt"
+MOBILENET_SSD_WEIGHTS = PROJECT_ROOT / "models/detection/mobilenet_ssd_v2.caffemodel"
+YOLOV5N_WEIGHTS = PROJECT_ROOT / "models/detection/yolov5n.pt"
+YOLOV5S_WEIGHTS = PROJECT_ROOT / "models/detection/yolov5s.pt"
+YOLOV5M_WEIGHTS = PROJECT_ROOT / "models/detection/yolov5m.pt"
+YOLOV7_WEIGHTS = PROJECT_ROOT / "models/detection/yolov7.pt"
+YOLOV7_TINY_WEIGHTS = PROJECT_ROOT / "models/detection/yolov7-tiny.pt"
+YOLOV8N_PT_WEIGHTS = PROJECT_ROOT / "models/detection/yolov8n.pt"
+YOLOV8S_PT_WEIGHTS = PROJECT_ROOT / "models/detection/yolov8s.pt"
+YOLOV8M_PT_WEIGHTS = PROJECT_ROOT / "models/detection/yolov8m.pt"
+
 # YOLOv8 specific
 YOLO_INPUT_SHAPE = (640, 640)  # H, W
 YOLO_CONF_THRESHOLD = 0.3  # Confidence threshold for YOLO detections
@@ -110,7 +124,8 @@ CLASSES = (
 # --- Tracking Configuration ---
 # Specify which classes to track (e.g., only 'person')
 # Use a set for efficient lookup
-CLASSES_TO_TRACK = {"person", "car", "bus", "truck", "motorcycle"}
+# CLASSES_TO_TRACK = {"person", "car", "bus", "truck", "motorcycle"}
+CLASSES_TO_TRACK = {"person"}
 
 # --- Visualization Configuration ---
 # Seed for consistent random colors, or remove for fully random colors each run
@@ -131,7 +146,7 @@ FONT_SCALE_INFO = 0.9
 FONT_THICKNESS = 2
 
 # --- Video I/O ---
-DEFAULT_OUTPUT_FPS = 30
+DEFAULT_OUTPUT_FPS = 60
 
 
 # --- Helper function to get color for a track ---

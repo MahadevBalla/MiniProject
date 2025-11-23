@@ -51,6 +51,18 @@ class ByteTrackWrapper:
         scores = np.asarray(scores, dtype=np.float32)
         class_ids = np.asarray(class_ids, dtype=np.float32)
 
+        # --- FILTER TO ONLY PERSON DETECTIONS ---
+        if len(class_ids) > 0:
+            mask = np.array(
+                [
+                    config.CLASSES[int(cid)] in config.CLASSES_TO_TRACK
+                    for cid in class_ids
+                ]
+            )
+            bboxes_xyxy = bboxes_xyxy[mask]
+            scores = scores[mask]
+            class_ids = class_ids[mask]
+
         # Prepare input for ByteTracker
         # ByteTracker expects: np.ndarray with shape (N, 6)
         # Format: [x1, y1, x2, y2, score, class_id]
