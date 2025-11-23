@@ -1,4 +1,4 @@
-# Real-Time NObject Tracking: Detector Benchmarking with ByteTrack
+# Real-Time Multi-Object Tracking: Detector Benchmarking with ByteTrack
 
 ## Project Summary
 
